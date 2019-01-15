@@ -23,10 +23,10 @@ do
 	        RunAffy=T
 	        shift 2
 	        ;;
-     # -a | --autosome) #flag for filtering by autosome
-	#        Autosome=True
-	 #       shift 1
-	  #      ;;
+      -a | --autosome) #flag for filtering by autosome
+	        Autosome=True
+	        shift 1
+	        ;;
       -b | --bfile) #same as normal plink - Path to all files and the shared prefix
 	        BFile="$2"  
 	        shift 2
@@ -87,8 +87,9 @@ echo "Using bim file ${BimFile:=${BFile:=$BfileDefault}.bim}"
 echo "Using bed file ${BedFile:=${BFile:=$BfileDefault}.bed}"
 echo "Using fam file ${FamFile:=${BFile:=$BfileDefault}.fam}"
 echo "Using Output Directory ${OutputDir:=$OutputDirDefault}"
+echo "Performing Autosome Filtering is: ${Autosome:=AutosomeDefault}"
 echo "Using hapmap files located in ${HapMapDir:=$HapMapDirDefault}"
-echo "Performing Liftover: ${LiftOver:=LiftOverDefault}"
+echo "Performing Liftover: ${LiftOver:=$LiftOverDefault}"
 
 if [ ! -e "${BimFile}" ] || [ ! -e "${FamFile}" ] || [ ! -e "${BedFile}" ]
 then
@@ -118,19 +119,6 @@ then
 fi
 
 #Perform a build liftover from 18 to 19 if necessary
-if [ "${LiftOver}" = "True" ] 
-then
-	if [ ! -d "${OutputDir}"/liftover ]
-	then
-		mkdir "${OutputDir}"/liftover
-	fi
-	"${PlinkPath}"/plink --bed "${BedFile}" --bim "${BimFile}" --fam "${FamFile}" --recode --out "${OutputDir}"/liftover/lift_input
-	python ~/gwasqc_pipeline/LiftMap.py -m "${OutputDir}"/liftover/lift_input.map -p "${OutputDir}"/liftover/lift_input.ped -o "${OutputDir}"/liftover/post_lift
-	"${PlinkPath}"/plink --file "${OutputDir}"/liftover/post_lift --make-bed --out "${OutputDir}"/liftover/hg19
-	BedFile="${OutputDir}"/liftover/hg19.bed
-	BimFile="${OutputDir}"/liftover/hg19.bim
-	FamFile="${OutputDir}"/liftover/hg19.fam
-then
 
 #If you would like to remove outliers from relatedness do so here
 if [ "${Prefilter}" = "remove" ] 
@@ -140,6 +128,10 @@ then
 	BimFile="${OutputDir}"/hapmap/00remove_outliers.bim
 	FamFile="${OutputDir}"/hapmap/00remove_outliers.fam
 fi
+
+#Create PCA for unmerged population
+"${PlinkPath}"/plink --bed "${BedFile}" --bim "${BimFile}" --fam "${FamFile}" --pca "${PCA:=$PCADefault}"  header --out "${OutputDir}"/PCA/unmerged_pca
+Rscript ~/gwasqc_pipeline/Rscripts/eigenplot.R --val "${OutputDir}"/PCA/unmerged_pca.eigenval --vec "${OutputDir}"/PCA/unmerged_pca.eigenvec --outputdir "${OutputDir}"/PCA/
 
 #Liftover if necessary
 #Translate SNP from Affy to rsid if necessary
@@ -152,6 +144,20 @@ then
 	FamFile="${OutputDir}"/hapmap/00premerge.fam
 fi
 
+if [ "${LiftOver}" = "True" ] 
+then
+	if [ ! -d "${OutputDir}"/liftover ]
+	then
+		mkdir "${OutputDir}"/liftover
+	fi
+	"${PlinkPath}"/plink --bed "${BedFile}" --bim "${BimFile}" --fam "${FamFile}" --recode --out "${OutputDir}"/liftover/lift_input
+	python ~/gwasqc_pipeline/LiftMap.py -m "${OutputDir}"/liftover/lift_input.map -p "${OutputDir}"/liftover/lift_input.ped -o "${OutputDir}"/liftover/post_lift
+	"${PlinkPath}"/plink --file "${OutputDir}"/liftover/post_lift --make-bed --out "${OutputDir}"/liftover/hg19
+	BedFile="${OutputDir}"/liftover/hg19.bed
+	BimFile="${OutputDir}"/liftover/hg19.bim
+	FamFile="${OutputDir}"/liftover/hg19.fam
+fi
+
 #6a Hapmap merge
 "${PlinkPath}"/plink --bed "${BedFile}" --bim "${BimFile}" --fam "${FamFile}" --bmerge "${HapMapDir}"/*.bed "${HapMapDir}"/*.bim "${HapMapDir}"/*.fam --make-bed --out "${OutputDir}"/hapmap/01primarymerge
 
@@ -162,20 +168,42 @@ then
 	#6c Hapmap merge again without missing snps
 	"${PlinkPath}"/plink --bed "${BedFile}" --bim "${BimFile}" --fam "${FamFile}" --bmerge "${OutputDir}"/hapmap/02hapmap_withoutmissing.bed "${OutputDir}"/hapmap/02hapmap_withoutmissing.bim "${OutputDir}"/hapmap/02hapmap_withoutmissing.fam --make-bed --out "${OutputDir}"/hapmap/03Withoutmissing
 	#6d Filter merged file to SNPs with >90% genotypes
-	"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/03Withoutmissing --geno "${GenotypingThreshold:=$GenotypingThresholdDefault}" --maf "${Maf:=$MafDefault}" --chr 1-22 --make-bed --out "${OutputDir}"/hapmap/"04Without_missing_geno${GenotypingThreshold}_noX"
-	Bfile="${OutputDir}"/hapmap/"04Without_missing_geno${GenotypingThreshold}_noX"
+	if [ "${Autosome}" = "True" ]
+	then
+		"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/03Withoutmissing --geno "${GenotypingThreshold:=$GenotypingThresholdDefault}" --maf "${Maf:=$MafDefault}" --chr 1-22 --make-bed --out "${OutputDir}"/hapmap/"04Without_missing_geno${GenotypingThreshold}_noX"
+		Bfile="${OutputDir}"/hapmap/"04Without_missing_geno${GenotypingThreshold}_noX"
+	else
+		"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/03Withoutmissing --geno "${GenotypingThreshold:=$GenotypingThresholdDefault}" --maf "${Maf:=$MafDefault}" --make-bed --out "${OutputDir}"/hapmap/"04Without_missing_geno${GenotypingThreshold}_noX"
+		Bfile="${OutputDir}"/hapmap/"04Without_missing_geno${GenotypingThreshold}_noX"
+	fi
 else
-	#6d Filter merged file to SNPs with >90% genotypes
-	"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/01primarymerge --geno "${GenotypingThreshold:=$GenotypingThresholdDefault}" --maf "${Maf:=$MafDefault}" --chr 1-22 --make-bed --out "${OutputDir}"/hapmap/"02-04geno${GenotypingThreshold}_noX"
-	Bfile="${OutputDir}"/hapmap/"02-04geno${GenotypingThreshold}_noX"
+	if [ "${Autosome}" = "True" ]
+	then
+		#6d Filter merged file to SNPs with >90% genotypes
+		"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/01primarymerge --geno "${GenotypingThreshold:=$GenotypingThresholdDefault}" --maf "${Maf:=$MafDefault}" --chr 1-22 --make-bed --out "${OutputDir}"/hapmap/"02-04geno${GenotypingThreshold}_noX"
+		Bfile="${OutputDir}"/hapmap/"02-04geno${GenotypingThreshold}_noX"
+	else
+		#6d Filter merged file to SNPs with >90% genotypes
+		"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/01primarymerge --geno "${GenotypingThreshold:=$GenotypingThresholdDefault}" --maf "${Maf:=$MafDefault}" --chr 1-22 --make-bed --out "${OutputDir}"/hapmap/"02-04geno${GenotypingThreshold}_noX"
+		Bfile="${OutputDir}"/hapmap/"02-04geno${GenotypingThreshold}_noX"
+	fi
 fi
 
 #6e Creat list of LD pruned snps
-"${PlinkPath}"/plink --bfile "${Bfile}" --indep-pairwise 50 5 0.3 --chr 1-22 --out "${OutputDir}"/hapmap/05LD_prune_list
-#6g extract LD pruned snps
-"${PlinkPath}"/plink --bfile "${Bfile}" --extract "${OutputDir}"/hapmap/05LD_prune_list.prune.in --chr 1-22 --make-bed --out "${OutputDir}"/hapmap/07final_LDpruned
-#6h Run PCA
-"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/07final_LDpruned --pca "${PCA:=$PCADefault}"  header --out "${OutputDir}"/PCA/pca
+if [ "${Autosome}" = "True" ]
+then
+	"${PlinkPath}"/plink --bfile "${Bfile}" --indep-pairwise 50 5 0.3 --chr 1-22 --out "${OutputDir}"/hapmap/05LD_prune_list
+	#6g extract LD pruned snps
+	"${PlinkPath}"/plink --bfile "${Bfile}" --extract "${OutputDir}"/hapmap/05LD_prune_list.prune.in --chr 1-22 --make-bed --out "${OutputDir}"/hapmap/07final_LDpruned
+else
+	"${PlinkPath}"/plink --bfile "${Bfile}" --indep-pairwise 50 5 0.3 --out "${OutputDir}"/hapmap/05LD_prune_list
+	#6g extract LD pruned snps
+	"${PlinkPath}"/plink --bfile "${Bfile}" --extract "${OutputDir}"/hapmap/05LD_prune_list.prune.in --make-bed --out "${OutputDir}"/hapmap/07final_LDpruned
 
-Rscript ~/gwasqc_pipeline/Rscripts/PCA.R --hapmapdir "${HapMapDir}" --val "${OutputDir}"/PCA/pca.eigenval --vec "${OutputDir}"/PCA/pca.eigenvec --fam "${OutputDir}"/hapmap/07final_LDpruned.fam --outputdir "${OutputDir}"/PCA/
+fi
+
+#6h Run PCA
+"${PlinkPath}"/plink --bfile "${OutputDir}"/hapmap/07final_LDpruned --pca "${PCA:=$PCADefault}"  header --out "${OutputDir}"/PCA/merged_pca
+
+Rscript ~/gwasqc_pipeline/Rscripts/PCA.R --hapmapdir "${HapMapDir}" --val "${OutputDir}"/PCA/merged_pca.eigenval --vec "${OutputDir}"/PCA/merged_pca.eigenvec --fam "${OutputDir}"/hapmap/07final_LDpruned.fam --outputdir "${OutputDir}"/PCA/
 
